@@ -1,7 +1,8 @@
 extends Node3D
 ## '그것'. 플레이어가 보고 있으면 멈추고, 시선을 돌리거나 눈을 감으면 칸 단위 최단 경로로 다가온다.
 
-signal caught
+## 잡힌 사람: "" 이면 이 기기의 플레이어, 아니면 동료의 네트워크 id
+signal caught(id: String)
 
 const SPEED := 1.9
 const CATCHUP_SPEED := 3.4
@@ -93,19 +94,31 @@ func despawn() -> void:
 	global_position = Vector3(9999, 0, 9999)
 
 
-func tick(delta: float, player: CharacterBody3D) -> void:
+## watchers: 동료 목록 [{id, pos, sees}]. 누구 하나라도 보고 있으면 멈추고, 가장 가까운 사람을 쫓는다.
+func tick(delta: float, player: CharacterBody3D, watchers: Array = []) -> void:
 	if not active:
 		return
 	var cam: Camera3D = player.camera
-	# 얼굴은 항상 플레이어를 향한다
-	var to_player := player.global_position - global_position
-	rotation.y = atan2(to_player.x, to_player.z)
-
 	seen = _visible_from(cam, player.eyes_closed)
-	var flat := Vector2(to_player.x, to_player.z)
+	var target_id := ""
+	var target_pos: Vector3 = player.global_position
+	var best := Vector2(target_pos.x - global_position.x, target_pos.z - global_position.z).length()
+	for w in watchers:
+		if w.sees:
+			seen = true
+		var d := Vector2(w.pos.x - global_position.x, w.pos.z - global_position.z).length()
+		if d < best:
+			best = d
+			target_id = w.id
+			target_pos = w.pos
+	# 얼굴은 쫓는 사람을 향한다
+	var to_target := target_pos - global_position
+	rotation.y = atan2(to_target.x, to_target.z)
+	var flat := Vector2(to_target.x, to_target.z)
 	if flat.length() < CATCH_DIST:
-		active = false
-		caught.emit()
+		if target_id == "":
+			active = false
+		caught.emit(target_id)
 		return
 	if seen:
 		return
@@ -113,10 +126,10 @@ func tick(delta: float, player: CharacterBody3D) -> void:
 	_repath -= delta
 	if _repath <= 0.0 or _path.is_empty():
 		_repath = REPATH_SEC
-		_path = level.path(level.cell_at(global_position), level.cell_at(player.global_position))
+		_path = level.path(level.cell_at(global_position), level.cell_at(target_pos))
 	var target: Vector3
 	if _path.size() <= 1:
-		target = player.global_position
+		target = target_pos
 	else:
 		var here: Vector2i = level.cell_at(global_position)
 		target = level.waypoint(here, _path[0], _path[1])

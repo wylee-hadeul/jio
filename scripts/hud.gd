@@ -7,6 +7,7 @@ signal flashlight_pressed
 signal eyes_changed(closed: bool)
 signal hint_pressed
 signal menu_pressed
+signal ping_pressed
 
 const JOY_RADIUS := 110.0
 const TAP_MAX_MOVE := 16.0
@@ -24,6 +25,8 @@ var show_flashlight_button := false
 var show_digits := false
 var prompt := ""
 var danger := 0.0
+## 같이 하기 중이면 "방 1234" 같은 글. 비어 있으면 혼자 하기.
+var room_label := ""
 
 var _joy_index := -1
 var _joy_origin := Vector2.ZERO
@@ -215,6 +218,8 @@ func buttons() -> Dictionary:
 	}
 	if show_flashlight_button:
 		out["flashlight"] = Rect2(size.x - 190, size.y - 390, 160, 150)
+	if room_label != "":
+		out["ping"] = Rect2(size.x - 190, size.y - 560, 160, 150)
 	return out
 
 
@@ -236,6 +241,8 @@ func _press_button(id: String, index: int) -> void:
 			hint_pressed.emit()
 		"menu":
 			menu_pressed.emit()
+		"ping":
+			ping_pressed.emit()
 
 
 # --- 그리기 ---
@@ -267,10 +274,13 @@ func _draw_overlay() -> void:
 		var rad: float = min(r.size.x, r.size.y) * 0.5
 		_overlay.draw_circle(center, rad, Color(COLOR_ACCENT.r, COLOR_ACCENT.g, COLOR_ACCENT.b, 0.35) if active else Color(0, 0, 0, 0.35))
 		_overlay.draw_arc(center, rad, 0, TAU, 40, Color(1, 1, 1, 0.35), 2)
-		var text: String = {"eyes": "눈 감기", "flashlight": "손전등", "hint": "?", "menu": "||"}[k]
+		var text: String = {"eyes": "눈 감기", "flashlight": "손전등", "hint": "?", "menu": "||", "ping": "부르기"}[k]
 		var fs := 30 if k in ["hint", "menu"] else 26
 		var tw := font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, fs).x
 		_overlay.draw_string(font, center + Vector2(-tw / 2, fs * 0.35), text, HORIZONTAL_ALIGNMENT_LEFT, -1, fs, Color(1, 1, 1, 0.8))
+	if room_label != "":
+		var rw := font.get_string_size(room_label, HORIZONTAL_ALIGNMENT_LEFT, -1, 24).x
+		_overlay.draw_string(font, Vector2(size.x / 2 - rw / 2, 52), room_label, HORIZONTAL_ALIGNMENT_LEFT, -1, 24, Color(1, 1, 1, 0.5))
 	if show_digits:
 		var digits := "번호  " + " ".join(G.digits_found().split(""))
 		_overlay.draw_string_outline(font, Vector2(28, 66), digits, HORIZONTAL_ALIGNMENT_LEFT, -1, 30, 6, Color(0, 0, 0, 0.7))
@@ -442,7 +452,7 @@ func show_lines(lines: Array, on_done: Callable, fullscreen := false) -> void:
 
 
 ## 빨간 문 번호판.
-func show_keypad(on_submit: Callable) -> void:
+func show_keypad(on_submit: Callable, title := "") -> void:
 	var dim := _dim()
 	dim.name = "KeypadPanel"
 	var panel := PanelContainer.new()
@@ -454,6 +464,10 @@ func show_keypad(on_submit: Callable) -> void:
 	var v := VBoxContainer.new()
 	v.add_theme_constant_override("separation", 16)
 	panel.add_child(v)
+	if title != "":
+		var tl := _label(title, 28, COLOR_TEXT)
+		tl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		v.add_child(tl)
 	var display := _label("_ _ _ _", 64, Color("ff5a4a"))
 	display.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	display.custom_minimum_size = Vector2(420, 90)

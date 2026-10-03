@@ -6,6 +6,7 @@ const Player := preload("res://scripts/player.gd")
 const Entity := preload("res://scripts/entity.gd")
 const Hud := preload("res://scripts/hud.gd")
 const Autoplay := preload("res://scripts/autoplay.gd")
+const Coop := preload("res://scripts/coop.gd")
 
 const INTERACT_DIST := 3.2
 const GAZE_DOT := 0.93
@@ -25,6 +26,7 @@ var level: Level
 var player: Player
 var entity: Entity
 var hud: Hud
+var coop: Coop
 var playing := false
 
 var _flicker := 1.0
@@ -42,7 +44,9 @@ func _ready() -> void:
 	entity = Entity.new()
 	add_child(entity)
 	entity.setup(level)
-	entity.caught.connect(_on_caught)
+	entity.caught.connect(_on_entity_caught)
+	coop = Coop.new()
+	add_child(coop)
 	var layer := CanvasLayer.new()
 	add_child(layer)
 	hud = Hud.new()
@@ -53,6 +57,16 @@ func _ready() -> void:
 	hud.hint_pressed.connect(func(): hud.toast(G.hint(), 5.0))
 	hud.menu_pressed.connect(_open_menu)
 	hud.eyes_changed.connect(func(closed: bool): Sfx.play("click", -18.0, 0.6 if closed else 0.8))
+	hud.ping_pressed.connect(func(): coop.ping())
+	coop.setup(self)
+	coop.net_event.connect(func(t: String, _d: Dictionary):
+		if t == "host_left" and coop.is_client():
+			_leave_coop()
+			entity.despawn()
+			playing = false
+			hud.close_all_panels()
+			hud.toast("방장이 나갔다. 노란 방이 흐려진다...", 5.0)
+			_show_title())
 	player.teleport(level.cell_center(level.START), 0.0)
 	_show_title()
 	if G.autoplay:
@@ -66,13 +80,126 @@ func _ready() -> void:
 func _show_title() -> void:
 	playing = false
 	hud.visible = true
+	hud.room_label = ""
+	G.save_path = G.AUTOPLAY_SAVE_PATH if G.autoplay else G.SAVE_PATH
 	var options: Array = []
+	var invited := Net.url_room()
+	if invited != "":
+		options.append(["방 %s 참가하기" % invited, func(): _join_room(invited)])
 	if G.has_save() and not G.autoplay:
 		options.append(["이어하기", func(): _begin(true)])
 		options.append(["처음부터", func(): _begin(false)])
 	else:
-		options.append(["들어가기", func(): _begin(false)])
+		options.append(["혼자 하기", func(): _begin(false)])
+	if Net.enabled:
+		options.append(["방 만들기 (같이 하기)", func(): _host_room("")])
+		if invited == "":
+			options.append(["방 번호로 참가하기", func(): hud.show_keypad(func(code: String) -> bool:
+				if code.length() != 4:
+					return false
+				_join_room.call_deferred(code)
+				return true, "방 번호 4자리")])
 	hud.show_menu("백룸", "LEVEL 0\n\n소리를 켜고 이어폰을 권장합니다", options)
+
+
+# --- 같이 하기 ---
+
+## 방을 만든다. code가 비어 있으면 무작위 4자리. 번호가 이미 쓰이면 다른 번호로 다시 시도한다.
+func _host_room(code: String) -> void:
+	hud.toast("방을 만드는 중...", 2.0)
+	await Sfx.build()
+	for attempt in 4:
+		var c := code if code != "" and attempt == 0 else Net.random_code()
+		Net.host(c)
+		var ev := await _wait_net(["_open", "_error"], 15.0)
+		if ev.get("t") == "_open":
+			_enter_coop(c)
+			await _begin(false)
+			hud.toast("방 번호 %s\n일시정지(||) 메뉴에서 초대 링크를 보낼 수 있다." % c, 6.0)
+			return
+		Net.leave()
+		if ev.get("e", "") != "unavailable-id":
+			break
+	hud.toast("방을 만들지 못했다. 인터넷 연결을 확인해 주세요.", 5.0)
+	_show_title()
+
+
+func _join_room(code: String) -> void:
+	hud.toast("방 %s 에 들어가는 중..." % code, 3.0)
+	await Sfx.build()
+	Net.join(code)
+	var ev := await _wait_net(["_connected", "_error"], 20.0)
+	if ev.get("t") != "_connected":
+		Net.leave()
+		hud.toast("방 %s 을(를) 찾지 못했다." % code, 5.0)
+		_show_title()
+		return
+	ev = await _wait_net(["welcome", "full", "host_left"], 15.0)
+	if ev.get("t") != "welcome":
+		Net.leave()
+		hud.toast("방이 가득 찼거나 응답이 없다." if ev.get("t") == "full" else "방장과 연결이 끊겼다.", 5.0)
+		_show_title()
+		return
+	_enter_coop(code)
+	var shared: Dictionary = ev.get("flags", {})
+	await _begin(false)
+	for k in shared:
+		G.flags[k] = true
+	_apply_progress()
+	G.save_game()
+
+
+func _enter_coop(code: String) -> void:
+	G.save_path = G.COOP_SAVE_PATH
+	coop.begin()
+	hud.room_label = "방 " + code
+
+
+func _leave_coop() -> void:
+	coop.end()
+	hud.room_label = ""
+
+
+## 네트워크 사건을 기다린다(시간 초과 시 빈 사전).
+func _wait_net(kinds: Array, timeout: float) -> Dictionary:
+	var box := {"ev": {}}
+	var cb := func(t: String, data: Dictionary):
+		if t in kinds and box.ev.is_empty():
+			var d := data.duplicate()
+			d.t = t
+			box.ev = d
+	coop.net_event.connect(cb)
+	var t := 0.0
+	while box.ev.is_empty() and t < timeout:
+		await get_tree().process_frame
+		t += get_process_delta_time()
+	coop.net_event.disconnect(cb)
+	return box.ev
+
+
+## 진행 상황이 생겼을 때의 화면/세계 반영. remote: 동료가 해낸 일.
+func apply_flag_effect(k: String, remote: bool) -> void:
+	match k:
+		"flashlight":
+			hud.show_flashlight_button = true
+			if remote:
+				hud.toast("동료가 손전등 꾸러미를 찾았다. 손전등 버튼이 생겼다.", 4.0)
+		"note2":
+			hud.show_digits = true
+			if remote:
+				hud.toast("동료가 출구에 대한 쪽지를 찾았다. 번호 칸이 생겼다.", 4.0)
+			if not coop.is_client() and not entity.active:
+				entity.spawn_far(player.global_position, player.camera)
+		"door_open":
+			level.open_door()
+			if remote:
+				hud.toast("멀리서 철컥, 하고 문 열리는 소리가 났다.", 4.0)
+		"digit_ceiling", "digit_pillar", "digit_phone", "digit_dark":
+			if remote:
+				hud.toast("동료가 숫자를 찾았다.\n번호  " + " ".join(G.digits_found().split("")), 4.0)
+		_:
+			if remote and k.begins_with("note"):
+				hud.toast("동료가 쪽지를 읽었다.", 2.5)
 
 
 func _begin(resume: bool) -> void:
@@ -107,7 +234,7 @@ func _apply_progress() -> void:
 func _start_play() -> void:
 	playing = true
 	G.save_game()
-	if G.has("note2") and not G.has("escaped"):
+	if G.has("note2") and not G.has("escaped") and not coop.is_client():
 		entity.spawn_far(player.global_position, player.camera)
 
 
@@ -117,10 +244,14 @@ func _process(delta: float) -> void:
 	player.frozen = hud.is_blocked() or not playing
 	_update_flicker(delta)
 	_update_shader()
+	coop.tick(delta)
+	# 같이 할 때는 방장의 창 때문에 세계가 멈추면 안 된다
+	if coop.is_host() and not _ending:
+		entity.tick(delta, player, coop.watchers())
 	if not playing:
 		_update_audio(INF)
 		return
-	if not hud.is_blocked():
+	if not coop.active and not hud.is_blocked():
 		entity.tick(delta, player)
 	var ent_dist := player.global_position.distance_to(entity.global_position) if entity.active else INF
 	_update_audio(ent_dist)
@@ -135,8 +266,20 @@ func _process(delta: float) -> void:
 func _update_shader() -> void:
 	var cam := player.camera
 	level.set_shared("cam_pos", cam.global_position)
-	level.set_shared("cam_dir", player.look_dir())
-	level.set_shared("flash_on", 1.0 if player.flashlight_on else 0.0)
+	var fl_pos := PackedVector3Array([cam.global_position, Vector3.ZERO, Vector3.ZERO, Vector3.ZERO])
+	var fl_dir := PackedVector3Array([player.look_dir(), Vector3.FORWARD, Vector3.FORWARD, Vector3.FORWARD])
+	var fl_on := PackedFloat32Array([1.0 if player.flashlight_on else 0.0, 0.0, 0.0, 0.0])
+	var i := 1
+	for light in coop.remote_flashlights():
+		if i >= 4:
+			break
+		fl_pos[i] = light[0]
+		fl_dir[i] = light[1]
+		fl_on[i] = 1.0
+		i += 1
+	level.set_shared("fl_pos", fl_pos)
+	level.set_shared("fl_dir", fl_dir)
+	level.set_shared("fl_on", fl_on)
 	level.set_shared("flicker", _flicker)
 	level.set_shared("entity_pos", entity.global_position if entity.active else Vector3(9999, 0, 9999))
 
@@ -230,10 +373,9 @@ func _read_note(id: String) -> void:
 		G.checkpoint_yaw = player.yaw
 		G.set_flag(id)
 		if id == "note2":
-			hud.show_digits = true
 			hud.toast("어디선가 전화벨이 울린다.\n...그리고 아주 잠깐, 형광등 소리가 끊겼다.", 5.0)
 			flicker_burst(30)
-			entity.spawn_far(player.global_position, player.camera)
+			apply_flag_effect("note2", false)
 		elif id == "note6":
 			hud.toast("어긋난 벽... 처음 떨어진 곳 근처였다.", 5.0))
 
@@ -243,7 +385,7 @@ func _open_pack() -> void:
 		hud.toast("텅 빈 배낭이다. 지수의 이름표가 달려 있다.")
 		return
 	G.set_flag("flashlight")
-	hud.show_flashlight_button = true
+	apply_flag_effect("flashlight", false)
 	player.flashlight_on = true
 	Sfx.play("click", -6.0)
 	hud.show_lines(["배낭 안에 손전등이 있다. 아직 켜진다.", "그 밑에 접힌 쪽지 한 장."], func(): _read_note("note3"))
@@ -267,7 +409,7 @@ func _use_door() -> void:
 		if code == G.EXIT_CODE:
 			Sfx.play("unlock")
 			G.set_flag("door_open")
-			level.open_door()
+			apply_flag_effect("door_open", false)
 			hud.toast("철컥. 빨간 문이 열린다.", 3.0)
 			return true
 		Sfx.play("buzz", -4.0)
@@ -345,15 +487,30 @@ func _escape() -> void:
 	playing = false
 	entity.despawn()
 	G.set_flag("escaped")
+	coop.announce_escape()
 	Sfx.stop_all()
 	Sfx.play("whoosh")
 	hud.show_lines(G.ENDING, func():
-		hud.show_menu("탈출", "LEVEL 0을 벗어났다.\n...아니면, 처음으로 돌아왔다.", [["처음부터", func():
+		hud.show_menu("탈출", "LEVEL 0을 벗어났다.\n...아니면, 처음으로 돌아왔다.", [["처음으로", func():
+			_leave_coop()
 			G.reset()
-			_begin(false)]]), true)
+			_show_title()]]), true)
 
 
-func _on_caught() -> void:
+func _on_entity_caught(id: String) -> void:
+	if id == "":
+		on_caught_local()
+		return
+	# 동료가 잡혔다(방장만 여기로 온다): 알리고 '그것'은 멀리 보낸다
+	coop.send_caught(id)
+	var victim: Vector3 = coop.remotes[id].pos if coop.remotes.has(id) else player.global_position
+	entity.spawn_far(victim, player.camera)
+	hud.toast("어디선가 비명이 들렸다.", 3.0)
+
+
+func on_caught_local() -> void:
+	if not playing:
+		return
 	playing = false
 	hud.scare()
 	await get_tree().create_timer(1.0).timeout
@@ -361,17 +518,31 @@ func _on_caught() -> void:
 		player.teleport(G.checkpoint, G.checkpoint_yaw)
 		player.eyes_closed = false
 		playing = true
-		entity.spawn_far(player.global_position, player.camera), true)
+		if not coop.active:
+			entity.spawn_far(player.global_position, player.camera)
+		elif coop.is_host():
+			entity.spawn_far(player.global_position, player.camera), true)
 
 
 func _open_menu() -> void:
 	if not playing or hud.is_blocked():
 		return
-	hud.show_menu("일시정지", "찾은 번호  " + " ".join(G.digits_found().split("")), [
-		["계속하기", func(): pass],
-		["처음부터", func():
+	var sub := "찾은 번호  " + " ".join(G.digits_found().split(""))
+	var options: Array = [["계속하기", func(): pass]]
+	if coop.active:
+		sub += "\n\n방 %s  |  %d명" % [Net.room, coop.player_count()]
+		options.append(["초대 링크 보내기", func():
+			var r := Net.share_invite()
+			hud.toast("초대 링크를 복사했다.\n" + Net.invite_url() if r == "copied" else "방 번호 " + Net.room, 5.0)])
+		options.append(["방 나가기", func():
+			_leave_coop()
+			entity.despawn()
+			playing = false
+			_show_title()])
+	else:
+		options.append(["처음부터", func():
 			G.reset()
 			entity.despawn()
 			playing = false
-			_begin(false)],
-	], false)
+			_begin(false)])
+	hud.show_menu("일시정지", sub, options, false)

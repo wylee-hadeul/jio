@@ -1,8 +1,11 @@
 extends Node
 ## 진행 상태, 이야기 텍스트, 저장/불러오기. 오토로드 "G".
 
+signal flag_set(key: String)
+
 const SAVE_PATH := "user://save.json"
 const AUTOPLAY_SAVE_PATH := "user://save_autoplay.json"
+const COOP_SAVE_PATH := "user://save_coop.json"
 const EXIT_CODE := "7359"
 
 const INTRO := [
@@ -83,6 +86,7 @@ func has(key: String) -> bool:
 func set_flag(key: String, value = true) -> void:
 	flags[key] = value
 	save_game()
+	flag_set.emit(key)
 
 
 func hint() -> String:

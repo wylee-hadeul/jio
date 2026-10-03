@@ -33,11 +33,20 @@ func _ready() -> void:
 func _run() -> void:
 	await _frames(10)
 	_log("START web=%s viewport=%s hud=%s" % [_web, _vp(), main.hud.size])
+	var mode := _url_param("autoplay")
+	if mode == "coophost":
+		await _run_coop_host(_url_param("aproom"))
+		_finish()
+		return
+	if mode == "coopjoin":
+		await _run_coop_join()
+		_finish()
+		return
 	_check_glyphs()
 	_check_map()
 
 	await _shot("00_title")
-	await _click_named("Opt_들어가기")
+	await _click_named("Opt_혼자 하기")
 	await _wait_until(func(): return Sfx.ready_built, 30.0)
 	await _skip_lines("01_intro")
 	_check(main.playing, "인트로 후 플레이 시작")
@@ -111,6 +120,109 @@ func _run() -> void:
 	await _skip_lines("16_ending")
 	await _shot("17_end_menu")
 	_finish()
+
+
+# --- 같이 하기 ---
+
+var _caught_ids: Array = []
+
+
+func _run_coop_host(code: String) -> void:
+	main.entity.caught.connect(func(id: String): _caught_ids.append(id))
+	main.hud.close_all_panels()
+	main._host_room(code)
+	await _wait_until(func(): return main.coop.is_host(), 30.0)
+	_check(main.coop.is_host() and Net.room == code, "방 만들기 (방 %s)" % code)
+	_log("HOSTING " + code)
+	await _skip_lines("h1_intro")
+	await _wait_until(func(): return main.coop.remotes.size() >= 1, 90.0)
+	_check(main.coop.remotes.size() >= 1, "동료 접속")
+	await _seconds(4.0)
+	var friend: Vector3 = main.coop.remotes.values()[0].pos
+	_check(friend.distance_to(main.level.cell_center(main.level.START)) > 1.5, "동료가 움직인 위치가 보인다 (%s)" % friend)
+	await _look_at(friend + Vector3(0, 1.5, 0))
+	await _seconds(0.5)
+	await _shot("h2_host_sees_friend")
+	await _go_read("note1", "")
+
+	# 그것을 동료 근처에, 방장 등 뒤에 둔다
+	var lvl = main.level
+	var fc: Vector2i = lvl.cell_at(main.coop.remotes.values()[0].pos)
+	var spot := Vector2i(-1, -1)
+	for c in lvl.open_cells():
+		if lvl.tile(c) in ["o", "O"]:
+			continue
+		var steps: int = lvl.path(fc, c).size()
+		if steps == 3:
+			spot = c
+			break
+	main.entity.place(lvl.cell_center(spot))
+	var away: Vector3 = main.player.global_position * 2.0 - lvl.cell_center(spot)
+	await _look_at(Vector3(away.x, 1.6, away.z))
+	_log("ENTITY placed %s (friend %s)" % [spot, fc])
+	await _wait_until(func(): return _remote_sees(), 30.0)
+	_check(_remote_sees(), "동료가 그것을 보고 있다는 신호 수신")
+	var e0: Vector3 = main.entity.global_position
+	await _seconds(2.0)
+	var moved: float = main.entity.global_position.distance_to(e0)
+	var host_sees: bool = main.entity._visible_from(main.player.camera, false)
+	_check(not host_sees and moved < 0.05, "나는 등을 돌려도 동료가 보고 있으면 멈춘다 (내 시야=%s, 이동 %.2fm)" % [host_sees, moved])
+	await _shot("h3_entity_frozen_by_friend")
+	await _wait_until(func(): return not _caught_ids.is_empty(), 40.0)
+	_check(not _caught_ids.is_empty() and _caught_ids[0] != "", "동료가 눈을 돌리자 그것이 동료를 잡았다")
+	await _seconds(8.0)
+
+
+func _remote_sees() -> bool:
+	for r in main.coop.remotes.values():
+		if r.sees:
+			return true
+	return false
+
+
+func _run_coop_join() -> void:
+	var code := _url_param("room")
+	await _click_named("Opt_방 %s 참가하기" % code)
+	await _wait_until(func(): return main.coop.is_client(), 60.0)
+	_check(main.coop.is_client(), "초대 링크로 방 %s 참가" % code)
+	await _skip_lines("j1_intro")
+	_check(main.playing, "참가 후 플레이 시작")
+	await _go_cell(Vector2i(1, 15))
+	await _wait_until(func(): return main.coop.remotes.size() >= 1, 20.0)
+	_check(main.coop.remotes.size() >= 1, "방장 아바타 수신")
+	if main.coop.remotes.size() >= 1:
+		await _look_at(main.coop.remotes.values()[0].pos + Vector3(0, 1.5, 0))
+	await _seconds(0.5)
+	await _shot("j2_client_sees_host")
+	await _wait_until(func(): return G.has("note1"), 60.0)
+	_check(G.has("note1"), "방장이 읽은 쪽지가 공유됨")
+	await _wait_until(func(): return main.entity.active, 60.0)
+	_check(main.entity.active, "방장이 움직이는 그것이 보인다")
+	var t := 0.0
+	while t < 8.0:
+		await _look_at(main.entity.global_position + Vector3(0, 1.8, 0))
+		await _seconds(0.2)
+		t += 0.3
+		if t > 2.0 and t < 2.4:
+			await _shot("j3_client_watching")
+	var away: Vector3 = main.player.global_position * 2.0 - main.entity.global_position
+	await _look_at(Vector3(away.x, 1.6, away.z))
+	await _wait_until(func(): return not main.playing, 40.0)
+	_check(not main.playing, "눈을 돌리자 잡힘 (참가자 화면)")
+	await _seconds(0.3)
+	await _shot("j4_caught")
+	await _skip_lines("")
+	await _seconds(0.5)
+	_check(main.playing, "참가자도 체크포인트에서 다시 시작")
+
+
+func _url_param(key: String) -> String:
+	if not _web:
+		return ""
+	var q := str(JavaScriptBridge.eval("location.search"))
+	var re := RegEx.create_from_string(key + "=([A-Za-z0-9]+)")
+	var m := re.search(q)
+	return m.get_string(1) if m else ""
 
 
 # --- 시나리오 조각 ---
@@ -392,10 +504,17 @@ func _check_glyphs() -> void:
 		"문은 열려 있다. 안쪽이 이상하게 어둡다.", "철컥. 빨간 문이 열린다.", "어긋난 벽... 처음 떨어진 곳 근처였다.",
 		"손끝에 닿은 벽이 물렁하다.\n...하지만 아직 발이 떨어지지 않는다.", "LEVEL 0을 벗어났다.\n...아니면, 처음으로 돌아왔다.",
 		"배낭 안에 손전등이 있다. 아직 켜진다.", "그 밑에 접힌 쪽지 한 장.", "찾은 번호", "소리를 켜고 이어폰을 권장합니다"])
+	# 스크립트 소스의 모든 문자열 리터럴도 검사(데스크톱에서 소스를 읽을 수 있을 때)
+	var lit := RegEx.create_from_string("\"(?:[^\"\\\\]|\\\\.)*\"")
+	for f in DirAccess.get_files_at("res://scripts"):
+		if f.ends_with(".gd"):
+			var src := FileAccess.get_file_as_string("res://scripts/" + f)
+			for m in lit.search_all(src):
+				texts.append(m.get_string().replace("\\n", "\n"))
 	var missing := {}
 	for t in texts:
 		for ch in str(t):
-			if ch in ["\n", " "]:
+			if ch in ["\n", " ", "\t", "\r"]:
 				continue
 			if not font.has_char(ch.unicode_at(0)):
 				missing[ch] = true

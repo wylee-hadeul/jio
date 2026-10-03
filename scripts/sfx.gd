@@ -24,7 +24,7 @@ func build() -> void:
 	var gens := {
 		"hum": _hum, "drone": _drone, "heartbeat": _heartbeat, "ring": _ring,
 		"step": _step, "sting": _sting, "static": _static, "beep": _beep, "buzz": _buzz,
-		"unlock": _unlock, "paper": _paper, "click": _click, "whoosh": _whoosh,
+		"unlock": _unlock, "paper": _paper, "click": _click, "whoosh": _whoosh, "call": _call,
 	}
 	for key in gens:
 		var data: PackedFloat32Array = gens[key].call()
@@ -217,6 +217,20 @@ func _whoosh() -> PackedFloat32Array:
 		var k := 0.01 + 0.2 * (t / 2.5)
 		lp += ((randf() - 0.5) - lp) * k
 		a[i] = lp * 2.5 * sin(PI * t / 2.5)
+	return a
+
+
+## 부르기: 위아래로 흔들리는 두 음 휘파람.
+func _call() -> PackedFloat32Array:
+	var a := _buf(0.7)
+	var phase := 0.0
+	for i in a.size():
+		var t := float(i) / RATE
+		var f := 880.0 if t < 0.3 else 660.0
+		f *= 1.0 + 0.02 * sin(TAU * 6.0 * t)
+		phase += TAU * f / RATE
+		var env: float = minf(t * 40.0, 1.0) * (1.0 - smoothstep(0.55, 0.7, t)) * (0.7 if t < 0.3 else 1.0)
+		a[i] = sin(phase) * 0.35 * env
 	return a
 
 

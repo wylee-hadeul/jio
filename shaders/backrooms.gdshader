@@ -11,8 +11,10 @@ uniform sampler2D light_map : filter_linear, repeat_disable;
 uniform vec2 map_size = vec2(17.0, 17.0);
 uniform float cell = 3.0;
 uniform vec3 cam_pos;
-uniform vec3 cam_dir = vec3(0.0, 0.0, -1.0);
-uniform float flash_on = 0.0;
+// 손전등 최대 4개(나 + 동료들)
+uniform vec3 fl_pos[4];
+uniform vec3 fl_dir[4];
+uniform float fl_on[4];
 uniform float flicker = 1.0;
 uniform vec3 entity_pos = vec3(9999.0);
 
@@ -93,9 +95,13 @@ void fragment() {
 	}
 
 	float dist = distance(wpos, cam_pos);
-	vec3 to = (wpos - cam_pos) / max(dist, 0.001);
-	float cone = smoothstep(0.86, 0.97, dot(to, cam_dir));
-	float fl = flash_on * cone * clamp(1.0 - dist / 16.0, 0.0, 1.0) * 1.15;
+	float fl = 0.0;
+	for (int i = 0; i < 4; i++) {
+		vec3 d = wpos - fl_pos[i];
+		float di = length(d);
+		float cone = smoothstep(0.86, 0.97, dot(d / max(di, 0.001), fl_dir[i]));
+		fl = max(fl, fl_on[i] * cone * clamp(1.0 - di / 16.0, 0.0, 1.0) * 1.15);
+	}
 	float b = max(amb * 0.95, fl) + 0.025;
 
 	float fog = smoothstep(3.0, 27.0, dist);

@@ -13,6 +13,7 @@ config/custom_user_dir_name="backrooms-level0"
 
 G="*res://scripts/game.gd"
 Sfx="*res://scripts/sfx.gd"
+Net="*res://scripts/net.gd"
 
 [display]
 
