@@ -475,7 +475,7 @@ func _build_digits() -> void:
 	dark.rotation = Vector3(0, PI, 0)
 	add_child(dark)
 	digit_labels["digit_dark"] = dark
-	var scrawl := _label("그것은 어둠 속에서 웃는다", 46, Color("8c1414"))
+	var scrawl := _label("그것은 어둠 속에서 웃는다", 30, Color("8c1414"))
 	scrawl.position = Vector3(0, -0.55, 0)
 	dark.add_child(scrawl)
 
