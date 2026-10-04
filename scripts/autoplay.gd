@@ -379,6 +379,7 @@ func _run_coop_join() -> void:
 	_check(not main.playing, "눈을 돌리자 잡힘 (참가자 화면)")
 	await _seconds(0.3)
 	await _shot("j4_caught")
+	await _wait_until(func(): return _top_name() == "LinesPanel", 4.0)
 	await _handle_ui("")
 	await _seconds(0.5)
 	_check(main.playing, "참가자도 체크포인트에서 다시 시작")
