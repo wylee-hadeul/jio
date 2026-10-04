@@ -551,9 +551,16 @@ func show_menu(title: String, subtitle: String, options: Array, fullscreen := tr
 	return root
 
 
+func clear_toasts() -> void:
+	for c in get_children():
+		if c.is_in_group("toast"):
+			c.queue_free()
+
+
 ## 짧은 알림(힌트, 숫자 발견 등). 몇 초 뒤 사라지고 입력을 막지 않는다.
 func toast(text: String, sec := 3.5) -> void:
 	var p := PanelContainer.new()
+	p.add_to_group("toast")
 	p.add_theme_stylebox_override("panel", _box(COLOR_PANEL, 10, 22))
 	p.set_anchors_and_offsets_preset(Control.PRESET_CENTER_TOP)
 	p.grow_horizontal = Control.GROW_DIRECTION_BOTH

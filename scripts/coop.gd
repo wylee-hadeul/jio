@@ -13,7 +13,7 @@ var active := false
 ## id -> {node, pos, yaw, pitch, fl, eyes, sees, ping}
 var remotes := {}
 var _send_t := 0.0
-var _entity_target := Vector3.ZERO
+var _entity_targets: Array = []
 
 
 func setup(m: Node3D) -> void:
@@ -58,8 +58,11 @@ func tick(delta: float) -> void:
 		n.rotation.y = lerp_angle(n.rotation.y, r.yaw, clampf(delta * 10.0, 0.0, 1.0))
 		r.ping = maxf(r.ping - delta, 0.0)
 		n.get_node("Ping").visible = r.ping > 0.0
-	if is_client() and main.entity.active:
-		main.entity.global_position = main.entity.global_position.lerp(_entity_target, clampf(delta * 12.0, 0.0, 1.0))
+	if is_client():
+		for i in mini(main.entities.size(), _entity_targets.size()):
+			var e = main.entities[i]
+			if e.active:
+				e.global_position = e.global_position.lerp(_entity_targets[i], clampf(delta * 12.0, 0.0, 1.0))
 	_send_t -= delta
 	if _send_t <= 0.0:
 		_send_t = 1.0 / SEND_HZ
@@ -68,11 +71,11 @@ func tick(delta: float) -> void:
 
 func _my_state() -> Dictionary:
 	var p: Vector3 = main.player.global_position
-	var sees := false
-	if main.entity.active and main.playing:
-		sees = main.entity._visible_from(main.player.camera, main.player.eyes_closed)
+	var sees: Array = []
+	for e in main.entities:
+		sees.append(e.active and main.playing and e._visible_from(main.player.camera, main.player.eyes_closed))
 	return {"p": [p.x, p.y, p.z], "y": main.player.yaw, "pi": main.player.pitch,
-		"f": main.player.flashlight_on, "e": main.player.eyes_closed, "s": sees, "on": main.playing}
+		"f": main.player.flashlight_on, "e": main.player.eyes_closed, "s": sees, "on": main.playing, "lv": G.level}
 
 
 func _send_state() -> void:
@@ -85,8 +88,11 @@ func _send_state() -> void:
 		for id in remotes:
 			var r: Dictionary = remotes[id]
 			pl[id] = {"p": [r.pos.x, r.pos.y, r.pos.z], "y": r.yaw, "pi": r.pitch, "f": r.fl, "e": r.eyes, "s": r.sees, "on": r.on}
-		var e: Vector3 = main.entity.global_position
-		Net.send({"t": "world", "pl": pl, "en": {"a": main.entity.active, "p": [e.x, e.y, e.z]}})
+		var en: Array = []
+		for e in main.entities:
+			var ep: Vector3 = e.global_position
+			en.append({"a": e.active, "p": [ep.x, ep.y, ep.z]})
+		Net.send({"t": "world", "pl": pl, "en": en, "lv": G.level})
 
 
 # --- 받기 ---
@@ -99,7 +105,7 @@ func _on_message(m: Dictionary) -> void:
 			net_event.emit(t, m)
 		"_join":
 			if is_host():
-				Net.send({"t": "welcome", "flags": _shared_flags(), "you": from}, from)
+				Net.send({"t": "welcome", "flags": _shared_flags(), "inv": G.inv, "level": G.level, "you": from}, from)
 				main.hud.toast("누군가 노란 방에 들어왔다. (%d명)" % (player_count() + 1))
 		"_leave":
 			if remotes.has(from):
@@ -108,9 +114,13 @@ func _on_message(m: Dictionary) -> void:
 			if is_client():
 				net_event.emit("host_left", m)
 		"welcome":
-			for k in m.get("flags", {}):
-				G.flags[k] = true
 			net_event.emit("welcome", m)
+		"level":
+			if is_client():
+				main.go_level(int(m.get("i", 0)), false)
+		"exit":
+			if is_host():
+				main.request_exit()
 		"st":
 			if is_host():
 				_update_remote(from, m)
@@ -153,7 +163,8 @@ func _update_remote(id: String, m: Dictionary) -> void:
 	r.pitch = float(m.get("pi", 0.0))
 	r.fl = bool(m.get("f", false))
 	r.eyes = bool(m.get("e", false))
-	r.sees = bool(m.get("s", false))
+	var s = m.get("s", [])
+	r.sees = s if typeof(s) == TYPE_ARRAY else []
 	r.on = bool(m.get("on", true))
 	r.node.visible = r.on
 
@@ -166,14 +177,19 @@ func _apply_world(m: Dictionary) -> void:
 	for id in remotes.keys():
 		if not pl.has(id):
 			_remove(id)
-	var en: Dictionary = m.get("en", {})
-	var was: bool = main.entity.active
-	main.entity.active = bool(en.get("a", false))
-	main.entity.visible = main.entity.active
-	var ep: Array = en.get("p", [9999, 0, 9999])
-	_entity_target = Vector3(ep[0], ep[1], ep[2])
-	if main.entity.active and not was:
-		main.entity.global_position = _entity_target
+	if int(m.get("lv", G.level)) != G.level:
+		return
+	var en: Array = m.get("en", [])
+	_entity_targets.resize(en.size())
+	for i in mini(en.size(), main.entities.size()):
+		var e = main.entities[i]
+		var was: bool = e.active
+		e.active = bool(en[i].get("a", false))
+		e.visible = e.active
+		var ep: Array = en[i].get("p", [9999, 0, 9999])
+		_entity_targets[i] = Vector3(ep[0], ep[1], ep[2])
+		if e.active and not was:
+			e.global_position = _entity_targets[i]
 
 
 # --- 진행 공유 ---
@@ -306,7 +322,7 @@ func _add(id: String) -> void:
 	ping_tag.visible = false
 	root.add_child(ping_tag)
 	remotes[id] = {"node": root, "pos": Vector3.ZERO, "yaw": 0.0, "pitch": 0.0, "fl": false,
-		"eyes": false, "sees": false, "on": true, "ping": 0.0, "tag": tag.text}
+		"eyes": false, "sees": [], "on": true, "ping": 0.0, "tag": tag.text}
 
 
 func _remove(id: String) -> void:

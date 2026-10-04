@@ -1,10 +1,11 @@
 extends Node
-## 오토플레이 테스트. 데스크톱: `godot --path . -- --autoplay --shots=<dir>` / 웹: `index.html?autoplay`
-## 실제 터치 입력(조이스틱 드래그, 시점 드래그, 화면 탭, 화면 버튼)으로 처음부터 엔딩까지 공략하고,
-## 그것(엔티티)의 '보면 멈춤/안 보면 다가옴/잡힘' 동작과 글꼴 누락을 검사한다.
+## 오토플레이 테스트. 데스크톱: `godot --path . -- --autoplay --shots=<dir> [--from=N]` / 웹: `index.html?autoplay`
+## 실제 터치 입력(조이스틱/시점 드래그/탭/화면 버튼)으로 모든 레벨을 레이아웃의 정답 순서대로 공략하고,
+## 레벨 0에서는 '그것'의 규칙, 손전등, 번호판 오답도 검사한다. 같이 하기 모드(coophost/coopjoin)도 있다.
 
+const Levels := preload("res://scripts/levels.gd")
 const SHOT_TIMEOUT_SEC := 15.0
-const NAV_TIME_SCALE := 4.0
+const NAV_TIME_SCALE := 6.0
 const WAYPOINT_TIMEOUT_SEC := 8.0
 
 var main: Node3D
@@ -14,6 +15,7 @@ var shots_dir := ""
 var _web := OS.has_feature("web")
 var _log_file: FileAccess
 var _joy_down := false
+var _caught_ids: Array = []
 
 
 func _ready() -> void:
@@ -32,7 +34,7 @@ func _ready() -> void:
 
 func _run() -> void:
 	await _frames(10)
-	_log("START web=%s viewport=%s hud=%s" % [_web, _vp(), main.hud.size])
+	_log("START web=%s viewport=%s hud=%s levels=%d" % [_web, _vp(), main.hud.size, Levels.count()])
 	var mode := _url_param("autoplay")
 	if mode == "coophost":
 		await _run_coop_host(_url_param("aproom"))
@@ -42,118 +44,277 @@ func _run() -> void:
 		await _run_coop_join()
 		_finish()
 		return
-	_check_glyphs()
-	_check_map()
 
+	_check_glyphs()
+	_check_levels()
+	var from := int(_arg("from", _url_param("from") if _web else "0"))
 	await _shot("00_title")
 	await _click_named("Opt_혼자 하기")
 	await _wait_until(func(): return Sfx.ready_built, 30.0)
-	await _skip_lines("01_intro")
+	await _handle_ui("01_intro")
 	_check(main.playing, "인트로 후 플레이 시작")
-
+	main.freeze_entities = true
 	await _test_look_drag()
-	await _go_read("note1", "02_note1")
-	await _look_at(main.level.cell_center(main.level.ANOMALY, 1.5))
-	await _shot("03_anomaly_wall")
-	await _go_read("note2", "04_note2")
-	_check(main.entity.active, "쪽지2 이후 그것 등장")
-	_check(main.hud.show_digits, "쪽지2 이후 번호 표시")
-	main.entity.despawn()
-
-	await _go_cell(Vector2i(1, 1))
-	await _interact("pack")
-	await _skip_lines("")
-	await _close_note("05_note3")
-	_check(G.has("flashlight") and main.player.flashlight_on, "배낭에서 손전등 획득, 켜짐")
-
-	await _go_cell(Vector2i(9, 2))
-	await _look_at(main.level.digit_labels["digit_ceiling"].global_position)
-	await _seconds(0.3)
-	_check(G.has("digit_ceiling"), "천장을 올려다보면 숫자 7 발견")
-	await _shot("06_ceiling_7")
-
-	await _go_cell(Vector2i(15, 7))
-	await _look_at(main.level.digit_labels["digit_pillar"].global_position)
-	await _seconds(0.3)
-	_check(G.has("digit_pillar"), "기둥 뒤에서 숫자 3 발견")
-	await _shot("07_pillar_3")
-
-	await _go_cell(Vector2i(15, 12))
-	_check(main._phone_ringing(), "전화벨이 울리는 중")
-	await _interact("phone")
-	await _skip_lines("08_phone")
-	_check(G.has("digit_phone"), "전화를 받아 숫자 5 획득")
-
-	await _tap_button("flashlight")
-	_check(not main.player.flashlight_on, "손전등 버튼으로 끄기")
-	await _go_cell(Vector2i(9, 12))
-	await _look_at(main.level.digit_labels["digit_dark"].global_position)
-	await _seconds(0.3)
-	_check(not G.has("digit_dark"), "손전등 없이 어둠 속 숫자는 안 보임")
-	await _shot("09_dark_no_light")
-	await _tap_button("flashlight")
-	await _seconds(0.3)
-	_check(G.has("digit_dark"), "손전등을 비추면 숫자 9 발견")
-	await _shot("10_dark_9")
-
-	await _go_read("note5", "11_note5")
-	await _go_read("note4", "12_note4")
-	_check(G.digits_found() == "7359", "번호 네 자리 모두 찾음 (%s)" % G.digits_found())
-
-	await _test_entity()
-
-	await _go_cell(main.level.DOOR_FRONT)
-	await _interact("door")
-	await _shot("13_keypad")
-	await _type_code("1234")
-	_check(not G.has("door_open"), "틀린 번호로는 안 열림")
-	await _type_code("7359")
-	await _seconds(1.8)
-	_check(G.has("door_open"), "7359 입력하면 빨간 문 열림")
-	await _shot("14_door_open")
-	await _go_read("note6", "15_note6")
-
-	await _go_cell(Vector2i(4, 14))
-	await _look_at(main.level.cell_center(main.level.ANOMALY, 1.5))
-	await _hold_eyes_and_walk(3.0)
-	_check(G.has("escaped"), "어긋난 벽에 눈 감고 걸어 들어가면 탈출")
-	await _skip_lines("16_ending")
-	await _shot("17_end_menu")
+	if from > 0:
+		G.set_flag("flashlight")
+		main.apply_flag_effect("flashlight", false)
+		main.player.flashlight_on = true
+		main.go_level(from, false)
+		await _handle_ui("")
+	for lv in range(from, Levels.count()):
+		await _solve_level(lv)
+		if main._ending:
+			break
+	_check(main._ending, "마지막 층에서 탈출 엔딩")
+	await _handle_ui("99_ending")
+	await _shot("99_end_menu")
 	_finish()
+
+
+# --- 레벨 공략 ---
+
+func _solve_level(lv: int) -> void:
+	_check(G.level == lv and main.layout.index == lv, "레벨 %d 시작 (%s %s)" % [lv, main.layout.name, main.layout.title])
+	await _seconds(0.3)
+	await _shot("L%02d_a_start" % lv)
+	var steps: Array = main.layout.solution
+	for i in steps.size():
+		var st: Dictionary = steps[i]
+		if lv == 0:
+			await _level0_extra_before(st)
+		match st.do:
+			"interact":
+				await _do_interact(st.id)
+			"gaze":
+				await _do_gaze(st.key)
+			"keypad":
+				await _do_keypad(st.id, st.code)
+			"noclip":
+				await _do_noclip()
+		if lv == 0:
+			await _level0_extra_after(st)
+		if G.level != lv or main._ending:
+			break
+		if i == steps.size() / 2:
+			await _shot("L%02d_b_mid" % lv)
+	if not main._ending:
+		await _wait_until(func(): return G.level == lv + 1, 6.0)
+		_check(G.level == lv + 1, "레벨 %d 탈출 -> 레벨 %d" % [lv, lv + 1])
+		await _handle_ui("L%02d_c_card" % (lv + 1))
+
+
+func _prop(id: String) -> Dictionary:
+	return main.level.props.get(id, {})
+
+
+func _do_interact(id: String) -> void:
+	var p := _prop(id)
+	if p.is_empty():
+		_check(false, "물체 없음: " + id)
+		return
+	await _go_cell(p.cell)
+	await _ensure_flashlight()
+	await _look_at(p.target)
+	await _tap_center()
+	await _frames(4)
+	var opened: bool = main.hud.is_blocked() or G.has(id) or G.level != main.layout.index
+	_check(opened, "%s 조사" % id)
+	await _handle_ui("")
+
+
+func _do_gaze(key: String) -> void:
+	var d: Dictionary = {}
+	for dd in main.layout.digits:
+		if dd.key == key:
+			d = dd
+	await _go_cell(d.view)
+	await _ensure_flashlight()
+	await _look_at(main.level.digit_labels[key].label.global_position)
+	await _seconds(0.3)
+	_check(G.has(key), "숫자 발견 %s (%s, %s)" % [key, d.kind, d.value])
+	await _handle_ui("")
+
+
+func _do_keypad(id: String, code: String) -> void:
+	var p := _prop(id)
+	await _go_cell(p.cell)
+	await _look_at(p.target)
+	await _tap_center()
+	await _wait_until(func(): return _top_name() == "KeypadPanel", 4.0)
+	if main.layout.index == 0:
+		await _shot("L00_keypad")
+		await _type_code("1234")
+		_check(not G.has("door_open"), "틀린 번호로는 안 열림")
+	await _type_code(code)
+	await _seconds(1.8)
+	_check(G.has("door_open") or G.has("exit_open"), "%s 번호 %s 입력 -> 열림" % [id, code])
+
+
+func _do_noclip() -> void:
+	var front: Vector2i = main.level.anomaly_front
+	await _go_cell(front)
+	await _look_at(main.level.cell_center(main.level.anomaly, 1.5))
+	await _shot("L%02d_noclip_wall" % G.level)
+	var r: Rect2 = main.hud.buttons()["eyes"]
+	_touch(5, r.get_center(), true)
+	await _frames(3)
+	_check(main.player.eyes_closed, "눈 감기 버튼")
+	var lv: int = G.level
+	_joystick(Vector2(0, -1))
+	var t := 0.0
+	while t < 4.0 and G.level == lv and not main._ending:
+		await get_tree().process_frame
+		t += get_process_delta_time()
+	_joystick_release()
+	_touch(5, r.get_center(), false)
+	await _frames(3)
+	_check(G.level != lv or main._ending, "어긋난 벽에 눈 감고 들어가기")
+
+
+## 창(쪽지/대사/번호판)이 열려 있으면 닫거나 넘긴다.
+func _handle_ui(shot_name: String) -> void:
+	var guard := 0
+	var shot_taken := false
+	await _frames(3)
+	while main.hud.is_blocked() and guard < 300:
+		guard += 1
+		var top := _top_name()
+		if shot_name != "" and not shot_taken:
+			await _frames(25)
+			await _shot(shot_name)
+			shot_taken = true
+		if top == "NotePanel":
+			await _frames(10)
+			await _click_named("Close")
+		elif top == "LinesPanel":
+			await _frames(8)
+			_mouse_click(_vp() * 0.5)
+			await _frames(2)
+		elif top == "KeypadPanel":
+			await _click_named("Close")
+		elif top == "MenuPanel":
+			break
+		else:
+			await _frames(5)
+	await _frames(3)
+
+
+func _level0_extra_before(st: Dictionary) -> void:
+	if st.do == "gaze" and st.key == "digit_dark":
+		await _tap_button("flashlight")
+		_check(not main.player.flashlight_on, "손전등 버튼으로 끄기")
+		await _go_cell(Vector2i(9, 12))
+		await _look_at(main.level.digit_labels["digit_dark"].label.global_position)
+		await _seconds(0.3)
+		_check(not G.has("digit_dark"), "손전등 없이 어둠 속 숫자는 안 보임")
+		await _shot("L00_dark_no_light")
+		await _tap_button("flashlight")
+
+
+func _level0_extra_after(st: Dictionary) -> void:
+	if st.do == "interact" and st.id == "note2":
+		_check(main.entity.active, "쪽지2 이후 그것 등장")
+		_check(main.hud.show_digits, "쪽지2 이후 번호 표시")
+	if st.do == "interact" and st.id == "pack":
+		_check(G.has("flashlight") and main.player.flashlight_on, "배낭에서 손전등 획득")
+	if st.do == "interact" and st.id == "note4":
+		_check(G.digits_found() == "7359", "번호 네 자리 모두 찾음 (%s)" % G.digits_found())
+		await _test_entity()
+
+
+func _ensure_flashlight() -> void:
+	if G.has("flashlight") and not main.player.flashlight_on and main.hud.buttons().has("flashlight"):
+		await _tap_button("flashlight")
+
+
+func _type_code(code: String) -> void:
+	for ch in code:
+		await _click_named("Key_" + ch)
+	await _click_named("Key_확인")
+	await _frames(10)
+
+
+func _test_look_drag() -> void:
+	var before: float = main.player.yaw
+	var start := Vector2(_vp().x * 0.75, _vp().y * 0.5)
+	_touch(3, start, true)
+	await _frames(1)
+	for k in 6:
+		_drag(3, start + Vector2(-20.0 * (k + 1), 0))
+		await _frames(1)
+	_touch(3, start + Vector2(-120, 0), false)
+	await _frames(2)
+	_check(main.player.yaw > before + 0.2, "오른쪽 화면 드래그로 시점 회전")
+
+
+## 그것: 안 보면 다가오고, 보면 멈추고, 닿으면 잡혀서 체크포인트로 돌아간다.
+func _test_entity() -> void:
+	main.freeze_entities = false
+	var p: Vector3 = main.player.global_position
+	var lvl = main.level
+	var pc: Vector2i = lvl.cell_at(p)
+	var spot := Vector2i(-1, -1)
+	for c in lvl.open_cells():
+		var steps: int = lvl.path(pc, c).size()
+		if steps >= 4 and steps <= 6:
+			spot = c
+			break
+	main.entity.place(lvl.cell_center(spot))
+	var away: Vector3 = p - (lvl.cell_center(spot) - p)
+	await _look_at(Vector3(away.x, 1.6, away.z))
+	var d0: float = p.distance_to(main.entity.global_position)
+	await _seconds(1.5)
+	var d1: float = main.player.global_position.distance_to(main.entity.global_position)
+	_check(d1 < d0 - 0.5, "안 보고 있으면 그것이 다가온다 (%.1f -> %.1f)" % [d0, d1])
+	var t := 0.0
+	while not main.entity.seen and t < 6.0:
+		await _look_at(main.entity.global_position + Vector3(0, 2.0, 0))
+		t += 0.1
+	var e0: Vector3 = main.entity.global_position
+	await _seconds(1.5)
+	var moved: float = main.entity.global_position.distance_to(e0)
+	_check(main.entity.seen and moved < 0.05, "보고 있으면 그것이 멈춘다 (이동 %.2fm)" % moved)
+	await _shot("L00_entity_seen")
+	var checkpoint: Vector3 = G.checkpoint
+	await _look_at(Vector3(away.x, 1.6, away.z))
+	await _wait_until(func(): return not main.playing, 15.0)
+	_check(not main.playing, "등 돌리고 있으면 잡힌다")
+	await _frames(20)
+	await _shot("L00_caught_scare")
+	await _wait_until(func(): return _top_name() == "LinesPanel", 4.0)
+	await _handle_ui("")
+	await _frames(5)
+	_check(main.playing and main.player.global_position.distance_to(checkpoint) < 0.6, "잡히면 마지막 쪽지 위치에서 다시 시작")
+	main.freeze_entities = true
 
 
 # --- 같이 하기 ---
 
-var _caught_ids: Array = []
-
-
 func _run_coop_host(code: String) -> void:
-	main.entity.caught.connect(func(id: String): _caught_ids.append(id))
 	main.hud.close_all_panels()
 	main._host_room(code)
 	await _wait_until(func(): return main.coop.is_host(), 30.0)
 	_check(main.coop.is_host() and Net.room == code, "방 만들기 (방 %s)" % code)
 	_log("HOSTING " + code)
-	await _skip_lines("h1_intro")
+	await _handle_ui("h1_intro")
+	main.entity.caught.connect(func(id: String): _caught_ids.append(id))
 	await _wait_until(func(): return main.coop.remotes.size() >= 1, 90.0)
 	_check(main.coop.remotes.size() >= 1, "동료 접속")
 	await _seconds(4.0)
 	var friend: Vector3 = main.coop.remotes.values()[0].pos
-	_check(friend.distance_to(main.level.cell_center(main.level.START)) > 1.5, "동료가 움직인 위치가 보인다 (%s)" % friend)
+	_check(friend.distance_to(main.level.cell_center(main.level.start)) > 1.5, "동료가 움직인 위치가 보인다 (%s)" % friend)
 	await _look_at(friend + Vector3(0, 1.5, 0))
 	await _seconds(0.5)
 	await _shot("h2_host_sees_friend")
-	await _go_read("note1", "")
+	await _do_interact("note1")
 
-	# 그것을 동료 근처에, 방장 등 뒤에 둔다
 	var lvl = main.level
 	var fc: Vector2i = lvl.cell_at(main.coop.remotes.values()[0].pos)
 	var spot := Vector2i(-1, -1)
 	for c in lvl.open_cells():
 		if lvl.tile(c) in ["o", "O"]:
 			continue
-		var steps: int = lvl.path(fc, c).size()
-		if steps == 3:
+		if lvl.path(fc, c).size() == 3:
 			spot = c
 			break
 	main.entity.place(lvl.cell_center(spot))
@@ -170,13 +331,19 @@ func _run_coop_host(code: String) -> void:
 	await _shot("h3_entity_frozen_by_friend")
 	await _wait_until(func(): return not _caught_ids.is_empty(), 40.0)
 	_check(not _caught_ids.is_empty() and _caught_ids[0] != "", "동료가 눈을 돌리자 그것이 동료를 잡았다")
+	# 다음 레벨로 같이 넘어가는지: 방장이 레벨 1로 보낸다
+	await _seconds(4.0)
+	main.go_level(1, true)
+	await _handle_ui("h4_level1_card")
+	_check(G.level == 1, "방장 레벨 1 이동")
 	await _seconds(8.0)
 
 
 func _remote_sees() -> bool:
 	for r in main.coop.remotes.values():
-		if r.sees:
-			return true
+		for s in r.sees:
+			if s:
+				return true
 	return false
 
 
@@ -185,8 +352,9 @@ func _run_coop_join() -> void:
 	await _click_named("Opt_방 %s 참가하기" % code)
 	await _wait_until(func(): return main.coop.is_client(), 60.0)
 	_check(main.coop.is_client(), "초대 링크로 방 %s 참가" % code)
-	await _skip_lines("j1_intro")
+	await _handle_ui("j1_intro")
 	_check(main.playing, "참가 후 플레이 시작")
+	main.freeze_entities = false
 	await _go_cell(Vector2i(1, 15))
 	await _wait_until(func(): return main.coop.remotes.size() >= 1, 20.0)
 	_check(main.coop.remotes.size() >= 1, "방장 아바타 수신")
@@ -211,155 +379,14 @@ func _run_coop_join() -> void:
 	_check(not main.playing, "눈을 돌리자 잡힘 (참가자 화면)")
 	await _seconds(0.3)
 	await _shot("j4_caught")
-	await _skip_lines("")
+	await _handle_ui("")
 	await _seconds(0.5)
 	_check(main.playing, "참가자도 체크포인트에서 다시 시작")
-
-
-func _url_param(key: String) -> String:
-	if not _web:
-		return ""
-	var q := str(JavaScriptBridge.eval("location.search"))
-	var re := RegEx.create_from_string(key + "=([A-Za-z0-9]+)")
-	var m := re.search(q)
-	return m.get_string(1) if m else ""
-
-
-# --- 시나리오 조각 ---
-
-func _go_read(note_id: String, shot_name: String) -> void:
-	await _go_cell(main.level.PROPS[note_id][0])
-	await _interact(note_id)
-	await _close_note(shot_name)
-	_check(G.has(note_id), "%s 읽음" % note_id)
-
-
-func _interact(id: String) -> void:
-	var body: Node3D = main.level.props.get(id, null)
-	var target: Vector3
-	if id == "door":
-		target = main.level.door_body.global_position + Vector3(0.6, 1.1, 0.0)
-	else:
-		target = body.global_position + _prop_offset(id)
-	await _look_at(target)
-	await _tap_center()
-	await _frames(6)
-	_check(main.hud.is_blocked(), "%s 조사 -> 창 열림" % id)
-
-
-func _prop_offset(id: String) -> Vector3:
-	if id.begins_with("note"):
-		return Vector3(0.35, 0.05, 0.4)
-	if id == "pack":
-		return Vector3(-0.5, 0.2, -0.5)
-	if id == "phone":
-		return Vector3(0.6, 0.8, 0.6)
-	return Vector3.ZERO
-
-
-func _close_note(shot_name: String) -> void:
-	await _wait_until(func(): return main.hud.top_panel() != null and main.hud.top_panel().name == "NotePanel", 5.0)
-	await _frames(20)
-	if shot_name != "":
-		await _shot(shot_name)
-	await _click_named("Close")
-	await _frames(4)
-
-
-func _skip_lines(shot_name: String) -> void:
-	await _wait_until(func(): return main.hud.top_panel() != null and main.hud.top_panel().name == "LinesPanel", 8.0)
-	var shot_taken := false
-	var guard := 0
-	var panel: Control = main.hud.top_panel()
-	while is_instance_valid(panel) and panel == main.hud.top_panel() and guard < 200:
-		await _frames(12)
-		if not shot_taken and shot_name != "":
-			shot_taken = true
-			await _shot(shot_name)
-		_mouse_click(_vp() * 0.5)
-		guard += 1
-	_check(guard < 200, "대사창 넘기기 (%s)" % shot_name)
-
-
-func _type_code(code: String) -> void:
-	for ch in code:
-		await _click_named("Key_" + ch)
-	await _click_named("Key_확인")
-	await _frames(10)
-	if main.hud.top_panel() != null and main.hud.top_panel().name == "KeypadPanel" and code == G.EXIT_CODE:
-		_log("WARN keypad still open after correct code")
-
-
-func _test_look_drag() -> void:
-	var before: float = main.player.yaw
-	var start := Vector2(_vp().x * 0.75, _vp().y * 0.5)
-	_touch(3, start, true)
-	await _frames(1)
-	for k in 6:
-		_drag(3, start + Vector2(-20.0 * (k + 1), 0))
-		await _frames(1)
-	_touch(3, start + Vector2(-120, 0), false)
-	await _frames(2)
-	_check(main.player.yaw > before + 0.2, "오른쪽 화면 드래그로 시점 회전")
-
-
-## 그것: 안 보면 다가오고, 보면 멈추고, 닿으면 잡혀서 체크포인트로 돌아간다.
-func _test_entity() -> void:
-	var p: Vector3 = main.player.global_position
-	var lvl = main.level
-	var pc: Vector2i = lvl.cell_at(p)
-	var spot := Vector2i(-1, -1)
-	for c in lvl.open_cells():
-		var steps: int = lvl.path(pc, c).size()
-		if steps >= 4 and steps <= 6:
-			spot = c
-			break
-	main.entity.place(lvl.cell_center(spot))
-	# 등을 돌린다
-	var away: Vector3 = p - (lvl.cell_center(spot) - p)
-	await _look_at(Vector3(away.x, 1.6, away.z))
-	var d0: float = p.distance_to(main.entity.global_position)
-	await _seconds(1.5)
-	var d1: float = main.player.global_position.distance_to(main.entity.global_position)
-	_check(d1 < d0 - 0.5, "안 보고 있으면 그것이 다가온다 (%.1f -> %.1f)" % [d0, d1])
-	# 벽 뒤에 가려 있으면 계속 다가오므로, 실제로 보이기 시작한 순간부터 잰다
-	var t := 0.0
-	while not main.entity.seen and t < 6.0:
-		await _look_at(main.entity.global_position + Vector3(0, 2.0, 0))
-		t += 0.1
-	var e0: Vector3 = main.entity.global_position
-	await _seconds(1.5)
-	var moved: float = main.entity.global_position.distance_to(e0)
-	_check(main.entity.seen and moved < 0.05, "보고 있으면 그것이 멈춘다 (seen=%s, 이동 %.2fm)" % [main.entity.seen, moved])
-	await _shot("t1_entity_seen")
-	var checkpoint: Vector3 = G.checkpoint
-	await _look_at(Vector3(away.x, 1.6, away.z))
-	await _wait_until(func(): return not main.playing, 15.0)
-	_check(not main.playing, "등 돌리고 있으면 잡힌다")
-	await _frames(20)
-	await _shot("t2_caught_scare")
-	await _skip_lines("t3_caught_text")
-	await _frames(5)
-	_check(main.playing and main.player.global_position.distance_to(checkpoint) < 0.6, "잡히면 마지막 쪽지 위치에서 다시 시작")
-	var steps: int = lvl.path(lvl.cell_at(main.player.global_position), lvl.cell_at(main.entity.global_position)).size()
-	_check(main.entity.active and steps >= main.entity.SPAWN_MIN_STEPS, "그것은 멀리서 다시 나타난다 (%d칸)" % steps)
-	main.entity.despawn()
-
-
-func _hold_eyes_and_walk(sec: float) -> void:
-	var r: Rect2 = main.hud.buttons()["eyes"]
-	_touch(5, r.get_center(), true)
-	await _frames(3)
-	_check(main.player.eyes_closed, "눈 감기 버튼을 누르는 동안 눈 감음")
-	await _shot("t4_eyes_closed")
-	_joystick(Vector2(0, -1))
-	var t := 0.0
-	while t < sec and not G.has("escaped"):
-		await get_tree().process_frame
-		t += get_process_delta_time()
-	_joystick_release()
-	_touch(5, r.get_center(), false)
-	await _frames(3)
+	await _wait_until(func(): return G.level == 1, 30.0)
+	_check(G.level == 1, "방장을 따라 레벨 1로 이동")
+	await _handle_ui("j5_level1_card")
+	await _seconds(2.0)
+	await _shot("j6_level1")
 
 
 # --- 이동 ---
@@ -376,6 +403,11 @@ func _go_cell(target: Vector2i) -> void:
 		prev = c
 		var t := 0.0
 		while true:
+			if main.hud.is_blocked():
+				_joystick_release()
+				Engine.time_scale = 1.0
+				await _handle_ui("")
+				Engine.time_scale = NAV_TIME_SCALE
 			var pos: Vector3 = main.player.global_position
 			var flat := Vector2(goal.x - pos.x, goal.z - pos.z)
 			if flat.length() < 0.45:
@@ -391,12 +423,12 @@ func _go_cell(target: Vector2i) -> void:
 	_joystick_release()
 	Engine.time_scale = 1.0
 	await _frames(3)
-	_check(lvl.cell_at(main.player.global_position) == target, "칸 %s 도착" % target)
+	if lvl.cell_at(main.player.global_position) != target:
+		_check(false, "칸 %s 도착 실패 (현재 %s)" % [target, lvl.cell_at(main.player.global_position)])
 
 
 func _look_at(target: Vector3) -> void:
 	main.player.face_towards(target)
-	# 회전은 플레이어의 물리 프레임에서 적용되므로 물리 프레임을 기다린다
 	for i in 3:
 		await get_tree().physics_frame
 	await _frames(2)
@@ -490,20 +522,28 @@ func _find_button(node_name: String) -> Control:
 	return top.find_child(node_name, true, false)
 
 
+func _top_name() -> String:
+	var top: Control = main.hud.top_panel()
+	return top.name if top else ""
+
+
 # --- 정적 검사 ---
 
 func _check_glyphs() -> void:
 	var font: Font = load("res://fonts/GowunBatang-Subset.ttf")
 	var texts: Array = G.all_text()
-	texts.append_array(main.DIGIT_TEXT.values())
-	texts.append_array(main.PROMPTS.values())
-	texts.append_array(["백룸", "LEVEL 0", "들어가기", "이어하기", "처음부터", "일시정지", "계속하기", "탈출", "닫기",
-		"돌아가기", "지움", "확인", "눈 감기", "손전등", "이동", "번호", "▶ 화면을 누르세요", "||", "?",
-		"눈을 감고 있다.\n형광등 소리만 들린다.", "어디선가 전화벨이 울린다.\n...그리고 아주 잠깐, 형광등 소리가 끊겼다.",
-		"텅 빈 배낭이다. 지수의 이름표가 달려 있다.", "수화기 너머엔 아무 소리도 없다.", "목소리가 말한 숫자: 5",
-		"문은 열려 있다. 안쪽이 이상하게 어둡다.", "철컥. 빨간 문이 열린다.", "어긋난 벽... 처음 떨어진 곳 근처였다.",
-		"손끝에 닿은 벽이 물렁하다.\n...하지만 아직 발이 떨어지지 않는다.", "LEVEL 0을 벗어났다.\n...아니면, 처음으로 돌아왔다.",
-		"배낭 안에 손전등이 있다. 아직 켜진다.", "그 밑에 접힌 쪽지 한 장.", "찾은 번호", "소리를 켜고 이어폰을 권장합니다"])
+	for i in Levels.count():
+		var lay: Dictionary = Levels.make(i)
+		texts.append(lay.name)
+		texts.append(lay.title)
+		texts.append_array(lay.intro)
+		for h in lay.hints:
+			texts.append(h[1])
+		for p in lay.props:
+			if p.data.has("text"):
+				texts.append(p.data.text)
+			if p.data.has("lines"):
+				texts.append_array(p.data.lines)
 	# 스크립트 소스의 모든 문자열 리터럴도 검사(데스크톱에서 소스를 읽을 수 있을 때)
 	var lit := RegEx.create_from_string("\"(?:[^\"\\\\]|\\\\.)*\"")
 	for f in DirAccess.get_files_at("res://scripts"):
@@ -521,13 +561,38 @@ func _check_glyphs() -> void:
 	_check(missing.is_empty(), "글꼴에 없는 글자 없음 %s" % ("" if missing.is_empty() else str(missing.keys())))
 
 
-func _check_map() -> void:
-	var lvl = main.level
-	for id in lvl.PROPS:
-		var c: Vector2i = lvl.PROPS[id][0]
-		if c == lvl.SECRET_ROOM:
-			continue
-		_check(not lvl.path(lvl.START, c).is_empty(), "시작점에서 %s 까지 길 있음" % id)
+## 모든 레벨: 정답 순서에 나오는 칸이 시작점에서 걸어서 닿는지, 같은 시드면 같은 맵인지.
+func _check_levels() -> void:
+	for i in Levels.count():
+		var lay: Dictionary = Levels.make(i)
+		var g: Array = lay.map
+		var reach := _reach(g, lay.start)
+		var bad: Array = []
+		for p in lay.props:
+			if p.cell != lay.get("secret_room", Vector2i(-1, -1)) and not reach.has(p.cell):
+				bad.append(p.id)
+		for d in lay.digits:
+			if not reach.has(d.view):
+				bad.append(d.key)
+		if lay.exit.kind == "noclip" and not reach.has(lay.anomaly_front):
+			bad.append("anomaly")
+		var again: Dictionary = Levels.make(i)
+		_check(bad.is_empty() and str(again.map) == str(lay.map), "레벨 %d %s: 모든 단서에 길 있음, 같은 시드 같은 맵 %s" % [i, lay.title, bad])
+
+
+func _reach(g: Array, from: Vector2i) -> Dictionary:
+	var seen := {from: true}
+	var q: Array = [from]
+	while not q.is_empty():
+		var c: Vector2i = q.pop_front()
+		for d in [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)]:
+			var n: Vector2i = c + d
+			if n.y < 0 or n.x < 0 or n.y >= g.size() or n.x >= g[0].length():
+				continue
+			if g[n.y][n.x] in [".", ",", "o", "O"] and not seen.has(n):
+				seen[n] = true
+				q.append(n)
+	return seen
 
 
 # --- 기록 ---
@@ -575,6 +640,22 @@ func _log(msg: String) -> void:
 
 func _vp() -> Vector2:
 	return get_viewport().get_visible_rect().size
+
+
+func _arg(key: String, default: String) -> String:
+	for a in OS.get_cmdline_user_args():
+		if a.begins_with("--%s=" % key):
+			return a.trim_prefix("--%s=" % key)
+	return default
+
+
+func _url_param(key: String) -> String:
+	if not _web:
+		return ""
+	var q := str(JavaScriptBridge.eval("location.search"))
+	var re := RegEx.create_from_string(key + "=([A-Za-z0-9]+)")
+	var m := re.search(q)
+	return m.get_string(1) if m else ""
 
 
 func _wait_until(cond: Callable, timeout: float) -> void:

@@ -20,7 +20,7 @@ const NOTES := {
 	"note3": "배낭에 손전등을 두고 간다.\n\n그것은 내가 보고 있을 때는\n움직이지 않았어.\n\n눈을 감는 순간이 제일 무서워.\n절대 오래 감지 마.\n\n- 지수",
 	"note4": "벽지가 어긋난 벽을 봤어.\n무늬가 반 칸쯤 밀려 있었어.\n\n처음 여기 떨어지던 날,\n계단도 그렇게 어긋나 보였는데.\n\n- 지수",
 	"note5": "이게 몇 번째 쪽지일까.\n\n쓰면 쓸수록 글씨가 낯익어.\n누군가 내 글씨를 흉내 내는 것 같아.\n\n아니면 내가 누군가를...\n\n- 지수",
-	"note6": "빨간 문 너머엔 아무것도 없었어.\n출구 표시는 미끼야.\n\n우리가 여기 어떻게 들어왔는지 기억해?\n발을 헛디뎌 벽을 통과했지.\n나가는 길도 똑같아.\n\n어긋난 벽 앞에서 눈을 감고, 걸어.\n\n그리고 이걸 읽는 너.\n글씨를 잘 봐.\n이건 네 글씨야.",
+	"note6": "빨간 문 너머엔 아무것도 없었어.\n출구 표시는 미끼야.\n\n우리가 여기 어떻게 들어왔는지 기억해?\n발을 헛디뎌 벽을 통과했지.\n나가는 길도 똑같아.\n\n어긋난 벽 앞에서 눈을 감고, 걸어.\n\n그 너머엔 또 다른 층이 있어.\n아주 많이.\n\n- 지수",
 }
 
 const PHONE_LINES := [
@@ -59,7 +59,17 @@ const HINTS := [
 	["escaped", "쪽지 4에 나온 '무늬가 반 칸 밀린 벽'을 찾아, 그 앞에서 눈을 감은 채 걸어 보자."],
 ]
 
+## 레벨이 바뀌어도 남는 것(소지품)
+const INVENTORY := ["flashlight"]
+
 var flags := {}
+## 지금 레벨 번호와 레벨을 넘어 유지되는 소지품
+var level := 0
+var inv := {}
+## 현재 레벨의 힌트 목록과 숨은 숫자 순서(main이 레벨을 지을 때 채운다)
+var hints: Array = HINTS
+var digit_keys: Array = ["digit_ceiling", "digit_pillar", "digit_phone", "digit_dark"]
+var digit_values := {"digit_ceiling": "7", "digit_pillar": "3", "digit_phone": "5", "digit_dark": "9"}
 ## 마지막으로 쪽지를 읽은 위치. 잡히면 여기서 다시 시작한다.
 var checkpoint := Vector3.ZERO
 var checkpoint_yaw := 0.0
@@ -80,27 +90,38 @@ static func _autoplay_requested() -> bool:
 
 
 func has(key: String) -> bool:
-	return flags.get(key, false)
+	return inv.get(key, false) or flags.get(key, false)
 
 
 func set_flag(key: String, value = true) -> void:
-	flags[key] = value
+	if key in INVENTORY:
+		inv[key] = value
+	else:
+		flags[key] = value
 	save_game()
 	flag_set.emit(key)
 
 
 func hint() -> String:
-	for h in HINTS:
+	for h in hints:
 		if not has(h[0]):
 			return h[1]
-	return "이미 이곳을 벗어났다."
+	return "출구를 찾아 다음 층으로 가자."
 
 
 func digits_found() -> String:
 	var s := ""
-	for pair in [["digit_ceiling", "7"], ["digit_pillar", "3"], ["digit_phone", "5"], ["digit_dark", "9"]]:
-		s += pair[1] if has(pair[0]) else "_"
+	for k in digit_keys:
+		s += str(digit_values.get(k, "?")) if has(k) else "_"
 	return s
+
+
+func next_level() -> void:
+	level += 1
+	flags = {}
+	checkpoint = Vector3.ZERO
+	checkpoint_yaw = 0.0
+	save_game()
 
 
 func has_save() -> bool:
@@ -111,6 +132,8 @@ func save_game() -> void:
 	var f := FileAccess.open(save_path, FileAccess.WRITE)
 	if f:
 		f.store_string(JSON.stringify({
+			"level": level,
+			"inv": inv,
 			"flags": flags,
 			"checkpoint": [checkpoint.x, checkpoint.y, checkpoint.z],
 			"yaw": checkpoint_yaw,
@@ -124,6 +147,8 @@ func load_game() -> bool:
 	if typeof(data) != TYPE_DICTIONARY:
 		return false
 	flags = data.get("flags", {})
+	inv = data.get("inv", {})
+	level = int(data.get("level", 0))
 	var c: Array = data.get("checkpoint", [0, 0, 0])
 	checkpoint = Vector3(c[0], c[1], c[2])
 	checkpoint_yaw = float(data.get("yaw", 0.0))
@@ -132,6 +157,8 @@ func load_game() -> bool:
 
 func reset() -> void:
 	flags = {}
+	inv = {}
+	level = 0
 	checkpoint = Vector3.ZERO
 	checkpoint_yaw = 0.0
 	if has_save():

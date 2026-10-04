@@ -13,6 +13,11 @@ const REPATH_SEC := 0.4
 const SPAWN_MIN_STEPS := 9
 
 var level: Node3D
+## 이 '그것'의 번호(같이 하기에서 동료가 보낸 '보고 있음' 배열의 위치)
+var index := 0
+## weeping: 보면 멈춤 / chase: 멈추지 않고 쫓아옴
+var mode := "weeping"
+var speed := SPEED
 var active := false
 var seen := false
 var _path: Array[Vector2i] = []
@@ -104,9 +109,10 @@ func tick(delta: float, player: CharacterBody3D, watchers: Array = []) -> void:
 	var target_pos: Vector3 = player.global_position
 	var best := Vector2(target_pos.x - global_position.x, target_pos.z - global_position.z).length()
 	for w in watchers:
-		if w.sees:
+		var sees: Array = w.sees
+		if index < sees.size() and sees[index]:
 			seen = true
-		var d := Vector2(w.pos.x - global_position.x, w.pos.z - global_position.z).length()
+		var d: float = Vector2(w.pos.x - global_position.x, w.pos.z - global_position.z).length()
 		if d < best:
 			best = d
 			target_id = w.id
@@ -120,6 +126,8 @@ func tick(delta: float, player: CharacterBody3D, watchers: Array = []) -> void:
 			active = false
 		caught.emit(target_id)
 		return
+	if mode == "chase":
+		seen = false
 	if seen:
 		return
 
@@ -135,10 +143,10 @@ func tick(delta: float, player: CharacterBody3D, watchers: Array = []) -> void:
 		target = level.waypoint(here, _path[0], _path[1])
 		if Vector2(target.x - global_position.x, target.z - global_position.z).length() < 0.3:
 			_path.pop_front()
-	var speed := CATCHUP_SPEED if flat.length() > CATCHUP_DIST else SPEED
+	var move_speed := CATCHUP_SPEED if flat.length() > CATCHUP_DIST and mode == "weeping" else speed
 	var step := Vector3(target.x - global_position.x, 0, target.z - global_position.z)
 	if step.length() > 0.001:
-		global_position += step.normalized() * min(step.length(), speed * delta)
+		global_position += step.normalized() * min(step.length(), move_speed * delta)
 
 
 func _visible_from(cam: Camera3D, eyes_closed: bool) -> bool:
